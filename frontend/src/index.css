@@ -1,0 +1,16 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* React Flow baseline */
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  background-color: #f9fafb;
+}
+
+.react-flow__node {
+  font-family: inherit;
+}

@@ -1,0 +1,32 @@
+server:
+  port: 38080
+
+spring:
+  application:
+    name: milan
+  threads:
+    virtual:
+      enabled: true
+  datasource:
+    url: jdbc:postgresql://localhost:35432/milan
+    username: milan
+    password: milan
+    hikari:
+      maximum-pool-size: 20
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+
+camel:
+  springboot:
+    main-run-controller: false
+
+logging:
+  level:
+    io.milan: DEBUG
+    io.milan.flow: INFO
+    org.apache.camel: INFO

@@ -1,0 +1,32 @@
+### Java / Maven ###
+target/
+*.class
+*.jar
+*.war
+*.ear
+.mvn/
+!mvn
+!mvnw
+
+### IDE ###
+.idea/
+*.iml
+.eclipse/
+.classpath
+.project
+.settings/
+*.swp
+
+### Node / Frontend ###
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.env.local
+
+### OS ###
+.DS_Store
+Thumbs.db
+
+### Spring Boot ###
+*.log
+logs/
