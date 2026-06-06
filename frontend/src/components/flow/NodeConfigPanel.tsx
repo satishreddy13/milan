@@ -8,10 +8,8 @@ interface Props {
 }
 
 export function NodeConfigPanel({ node, connectors }: Props) {
-  const { updateNodeData, deleteNode } = useFlowStore(s => ({
-    updateNodeData: s.updateNodeData,
-    deleteNode:     s.deleteNode,
-  }))
+  const updateNodeData = useFlowStore(s => s.updateNodeData)
+  const deleteNode     = useFlowStore(s => s.deleteNode)
 
   // Read config from the live store so edits reflect immediately
   const liveNode   = useFlowStore(s => s.nodes.find(n => n.id === node.id)) ?? node
