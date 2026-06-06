@@ -26,4 +26,8 @@ public record ConfigField(
     public static ConfigField textarea(String key, String label, boolean required, String defaultValue) {
         return new ConfigField(key, label, "textarea", required, defaultValue, null);
     }
+
+    public static ConfigField cron(String key, String label, boolean required, String defaultValue) {
+        return new ConfigField(key, label, "cron", required, defaultValue, null);
+    }
 }

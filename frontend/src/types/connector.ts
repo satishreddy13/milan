@@ -3,7 +3,7 @@ export type ConnectorCategory = 'TRIGGER' | 'PROCESSOR' | 'TRANSFORMER' | 'ACTIO
 export interface ConfigField {
   key:          string
   label:        string
-  type:         'string' | 'select' | 'number' | 'boolean' | 'textarea'
+  type:         'string' | 'select' | 'number' | 'boolean' | 'textarea' | 'cron'
   required:     boolean
   defaultValue: string | number | boolean | null
   options:      string[] | null

@@ -10,10 +10,8 @@ import java.util.List;
 
 /**
  * SOURCE — fires a flow on a Quartz cron schedule.
- * The cron expression uses Quartz syntax (7 fields, seconds-first):
- *   "0/10 * * * * ?" = every 10 seconds
- *   "0 0/5 * * * ?"  = every 5 minutes
- *   "0 0 8 * * ?"    = every day at 08:00
+ * Accepts standard 5-field Unix cron ("* /5 * * * *") or 6-field Quartz cron ("0 0/5 * * * ?").
+ * FlowRouteBuilder auto-converts 5-field → 6-field by prepending a "0" seconds field.
  */
 @Component
 public class SchedulerConnector implements ConnectorHandler {
@@ -29,7 +27,7 @@ public class SchedulerConnector implements ConnectorHandler {
                 "TRIGGER",
                 "Fires the flow on a Quartz cron schedule",
                 List.of(
-                        ConfigField.text("cron",        "Cron Expression", true,  "0/30 * * * * ?"),
+                        ConfigField.cron("cron",        "Cron Expression", true,  "0/30 * * * * ?"),
                         ConfigField.text("description", "Description",     false, "Every 30 seconds")
                 )
         );

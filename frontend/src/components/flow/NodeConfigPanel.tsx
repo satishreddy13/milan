@@ -1,6 +1,20 @@
 import type { Node } from '@xyflow/react'
 import type { ConnectorDescriptor } from '../../types/connector'
 import { useFlowStore } from '../../store/flowStore'
+import cronstrue from 'cronstrue'
+
+function parseCron(raw: string): { ok: boolean; text: string } {
+  const expr = raw.trim()
+  if (!expr) return { ok: false, text: '' }
+  // Accept both 5-field (Unix) and 6-field (Quartz) by normalising to 6-field
+  const normalized = expr.split(/\s+/).length === 5 ? '0 ' + expr : expr
+  try {
+    const text = cronstrue.toString(normalized, { use24HourTimeFormat: true, throwExceptionOnParseError: true })
+    return { ok: true, text }
+  } catch {
+    return { ok: false, text: 'Invalid cron expression' }
+  }
+}
 
 interface Props {
   node:       Node
@@ -59,7 +73,30 @@ export function NodeConfigPanel({ node, connectors }: Props) {
                   className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm
                              font-mono focus:outline-none focus:ring-1 focus:ring-blue-400"
                 />
-              ) : (
+              ) : field.type === 'cron' ? (() => {
+                const raw = config[field.key] ?? String(field.defaultValue ?? '')
+                const { ok, text } = parseCron(raw)
+                return (
+                  <>
+                    <input
+                      type="text"
+                      value={raw}
+                      onChange={e => handleChange(field.key, e.target.value)}
+                      placeholder={String(field.defaultValue ?? '')}
+                      className={`w-full border rounded px-2 py-1.5 text-sm font-mono
+                                  focus:outline-none focus:ring-1
+                                  ${ok
+                                    ? 'border-gray-300 focus:ring-blue-400'
+                                    : 'border-red-400 focus:ring-red-400'}`}
+                    />
+                    {text && (
+                      <p className={`mt-1 text-xs ${ok ? 'text-green-600' : 'text-red-500'}`}>
+                        {ok ? `✓ ${text}` : `✗ ${text}`}
+                      </p>
+                    )}
+                  </>
+                )
+              })() : (
                 <input
                   type="text"
                   value={config[field.key] ?? String(field.defaultValue ?? '')}
