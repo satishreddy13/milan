@@ -41,11 +41,17 @@ export const useFlowStore = create<FlowStore>((set, get) => ({
   setSelectedNode: (node)  => set({ selectedNode: node }),
   setDirty:        (dirty) => set({ dirty }),
 
-  onNodesChange: (changes) =>
-    set({ nodes: applyNodeChanges(changes, get().nodes), dirty: true }),
+  onNodesChange: (changes) => {
+    // 'dimensions' fires on init (React Flow measuring nodes), 'select' fires on click —
+    // neither represents a user edit, so don't mark dirty for those.
+    const userEdit = changes.some(c => c.type !== 'dimensions' && c.type !== 'select')
+    set({ nodes: applyNodeChanges(changes, get().nodes), ...(userEdit && { dirty: true }) })
+  },
 
-  onEdgesChange: (changes) =>
-    set({ edges: applyEdgeChanges(changes, get().edges), dirty: true }),
+  onEdgesChange: (changes) => {
+    const userEdit = changes.some(c => c.type !== 'select')
+    set({ edges: applyEdgeChanges(changes, get().edges), ...(userEdit && { dirty: true }) })
+  },
 
   onConnect: (connection) =>
     set({ edges: addEdge({ ...connection, animated: true }, get().edges), dirty: true }),
