@@ -8,46 +8,65 @@ interface FlowStore {
   nodes:        Node[]
   edges:        Edge[]
   selectedNode: Node | null
+  dirty:        boolean       // true when canvas has unsaved changes
 
   // Persisted flow metadata
   currentFlow:  Flow | null
 
   setCurrentFlow:  (flow: Flow) => void
-  setNodes:        (nodes: Node[]) => void
-  setEdges:        (edges: Edge[]) => void
+  setNodes:        (nodes: Node[]) => void   // resets dirty
+  setEdges:        (edges: Edge[]) => void   // resets dirty
   setSelectedNode: (node: Node | null) => void
+  setDirty:        (dirty: boolean) => void
 
   onNodesChange: (changes: NodeChange[]) => void
   onEdgesChange: (changes: EdgeChange[]) => void
   onConnect:     (connection: Connection) => void
 
   updateNodeData: (nodeId: string, config: Record<string, string>) => void
+  deleteNode:     (nodeId: string) => void
 }
 
 export const useFlowStore = create<FlowStore>((set, get) => ({
   nodes:        [],
   edges:        [],
   selectedNode: null,
+  dirty:        false,
   currentFlow:  null,
 
-  setCurrentFlow:  (flow) => set({ currentFlow: flow }),
-  setNodes:        (nodes) => set({ nodes }),
-  setEdges:        (edges) => set({ edges }),
+  setCurrentFlow:  (flow)  => set({ currentFlow: flow }),
+  // Loading from backend — not dirty
+  setNodes:        (nodes) => set({ nodes, dirty: false }),
+  setEdges:        (edges) => set({ edges, dirty: false }),
   setSelectedNode: (node)  => set({ selectedNode: node }),
+  setDirty:        (dirty) => set({ dirty }),
 
   onNodesChange: (changes) =>
-    set({ nodes: applyNodeChanges(changes, get().nodes) }),
+    set({ nodes: applyNodeChanges(changes, get().nodes), dirty: true }),
 
   onEdgesChange: (changes) =>
-    set({ edges: applyEdgeChanges(changes, get().edges) }),
+    set({ edges: applyEdgeChanges(changes, get().edges), dirty: true }),
 
   onConnect: (connection) =>
-    set({ edges: addEdge({ ...connection, animated: true }, get().edges) }),
+    set({ edges: addEdge({ ...connection, animated: true }, get().edges), dirty: true }),
 
-  updateNodeData: (nodeId, config) =>
+  updateNodeData: (nodeId, config) => {
+    const updatedNodes = get().nodes.map(n =>
+      n.id === nodeId ? { ...n, data: { ...n.data, config } } : n
+    )
+    // Keep selectedNode in sync so NodeConfigPanel sees the latest config
+    const updatedSelected = get().selectedNode?.id === nodeId
+      ? (updatedNodes.find(n => n.id === nodeId) ?? null)
+      : get().selectedNode
+    set({ nodes: updatedNodes, selectedNode: updatedSelected, dirty: true })
+  },
+
+  deleteNode: (nodeId) => {
     set({
-      nodes: get().nodes.map(n =>
-        n.id === nodeId ? { ...n, data: { ...n.data, config } } : n
-      ),
-    }),
+      nodes:        get().nodes.filter(n => n.id !== nodeId),
+      edges:        get().edges.filter(e => e.source !== nodeId && e.target !== nodeId),
+      selectedNode: get().selectedNode?.id === nodeId ? null : get().selectedNode,
+      dirty:        true,
+    })
+  },
 }))

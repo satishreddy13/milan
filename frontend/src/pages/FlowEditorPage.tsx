@@ -22,8 +22,8 @@ export function FlowEditorPage() {
   const [triggerResult, setTriggerResult] = useState<string | null>(null)
   const [triggering, setTriggering]     = useState(false)
 
-  const { currentFlow, nodes, edges, selectedNode,
-          setCurrentFlow, setNodes, setEdges, setSelectedNode } = useFlowStore()
+  const { currentFlow, nodes, edges, selectedNode, dirty,
+          setCurrentFlow, setNodes, setEdges, setSelectedNode, setDirty } = useFlowStore()
 
   useEffect(() => {
     if (!id) return
@@ -57,6 +57,7 @@ export function FlowEditorPage() {
       }
       const updated = await flowsApi.update(id, { definition })
       setCurrentFlow(updated)
+      setDirty(false)
     } finally {
       setSaving(false)
     }
@@ -122,9 +123,11 @@ export function FlowEditorPage() {
         )}
         <div className="ml-auto flex items-center gap-2">
           <button onClick={save} disabled={saving}
-            className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg
-                       hover:bg-gray-50 disabled:opacity-50">
-            {saving ? 'Saving…' : '💾 Save'}
+            className={`px-3 py-1.5 text-sm rounded-lg disabled:opacity-50 transition-colors
+              ${dirty
+                ? 'bg-amber-500 text-white hover:bg-amber-600 border border-amber-500'
+                : 'border border-gray-300 hover:bg-gray-50 text-gray-700'}`}>
+            {saving ? 'Saving…' : dirty ? '💾 Save*' : '💾 Save'}
           </button>
           <button
             onClick={() => { setShowTrigger(true); setTriggerResult(null) }}
