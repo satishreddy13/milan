@@ -107,7 +107,12 @@ public class FlowRouteBuilder extends RouteBuilder {
             }
 
             case "SCHEDULER" -> {
-                String cron = cfg.getOrDefault("cron", "0/30 * * * * ?").toString();
+                String cron = cfg.getOrDefault("cron", "0/30 * * * * ?").toString().trim();
+                // Auto-convert standard 5-field Unix cron (m h dom mon dow) to
+                // Quartz 6-field (s m h dom mon dow) by prepending a "0" seconds field
+                if (cron.split("\\s+").length == 5) {
+                    cron = "0 " + cron;
+                }
                 // Quartz cron URIs use '+' instead of spaces
                 String encodedCron = cron.replace(" ", "+");
                 from("quartz://milan/" + flowId + "?cron=" + encodedCron + "&stateful=false")
