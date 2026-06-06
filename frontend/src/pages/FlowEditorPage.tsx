@@ -14,21 +14,22 @@ import type { FlowDefinition }      from '../types/flow'
 export function FlowEditorPage() {
   const { id }          = useParams<{ id: string }>()
   const navigate        = useNavigate()
-  const [connectors, setConnectors]   = useState<ConnectorDescriptor[]>([])
-  const [saving, setSaving]           = useState(false)
-  const [starting, setStarting]       = useState(false)
+  const [connectors, setConnectors]     = useState<ConnectorDescriptor[]>([])
+  const [saving, setSaving]             = useState(false)
+  const [starting, setStarting]         = useState(false)
+  const [showTrigger, setShowTrigger]   = useState(false)
+  const [triggerBody, setTriggerBody]   = useState('{\n  "key": "value"\n}')
+  const [triggerResult, setTriggerResult] = useState<string | null>(null)
+  const [triggering, setTriggering]     = useState(false)
 
   const { currentFlow, nodes, edges, selectedNode,
           setCurrentFlow, setNodes, setEdges, setSelectedNode } = useFlowStore()
 
-  // Load flow + connectors
   useEffect(() => {
     if (!id) return
     Promise.all([flowsApi.get(id), connectorsApi.list()]).then(([flow, conns]) => {
       setCurrentFlow(flow)
       setConnectors(conns)
-
-      // Hydrate canvas from stored definition
       const def: FlowDefinition = flow.definition
       const rfNodes: Node[] = def.nodes.map(n => ({
         id:       n.id,
@@ -81,6 +82,21 @@ export function FlowEditorPage() {
     }
   }
 
+  const sendTrigger = async () => {
+    if (!id) return
+    setTriggering(true)
+    setTriggerResult(null)
+    try {
+      const res = await flowsApi.trigger(id, triggerBody)
+      setTriggerResult(res.data ?? '(empty response)')
+    } catch (err: any) {
+      const msg = err?.response?.data || err?.message || 'Unknown error'
+      setTriggerResult(`Error: ${msg}`)
+    } finally {
+      setTriggering(false)
+    }
+  }
+
   const statusColors: Record<string, string> = {
     DRAFT:    'bg-gray-100 text-gray-600',
     ACTIVE:   'bg-green-100 text-green-700',
@@ -110,6 +126,14 @@ export function FlowEditorPage() {
                        hover:bg-gray-50 disabled:opacity-50">
             {saving ? 'Saving…' : '💾 Save'}
           </button>
+          <button
+            onClick={() => { setShowTrigger(true); setTriggerResult(null) }}
+            disabled={currentFlow?.status !== 'ACTIVE'}
+            title={currentFlow?.status !== 'ACTIVE' ? 'Start the flow first' : 'Send a test payload'}
+            className="px-3 py-1.5 text-sm border border-indigo-300 text-indigo-600 rounded-lg
+                       hover:bg-indigo-50 disabled:opacity-40 disabled:cursor-not-allowed">
+            ⚡ Test
+          </button>
           <button onClick={toggleFlow} disabled={starting || !currentFlow}
             className={`px-3 py-1.5 text-sm rounded-lg font-medium disabled:opacity-50
               ${currentFlow?.status === 'ACTIVE'
@@ -128,16 +152,64 @@ export function FlowEditorPage() {
           <div className="flex flex-1 overflow-hidden">
             <FlowCanvas connectors={connectors} />
             {selectedNode && (
-              <NodeConfigPanel
-                node={selectedNode}
-                connectors={connectors}
-              />
+              <NodeConfigPanel node={selectedNode} connectors={connectors} />
             )}
           </div>
-
           {id && <ExecutionLogFooter flowId={id} />}
         </main>
       </div>
+
+      {/* Test / Manual Trigger Modal */}
+      {showTrigger && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-xl w-[520px] flex flex-col max-h-[80vh]">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+              <h2 className="font-semibold text-gray-800">⚡ Test Flow</h2>
+              <button onClick={() => setShowTrigger(false)}
+                className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
+            </div>
+
+            <div className="p-5 flex flex-col gap-4 overflow-y-auto">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">
+                  Request Body
+                </label>
+                <textarea
+                  value={triggerBody}
+                  onChange={e => setTriggerBody(e.target.value)}
+                  rows={8}
+                  className="w-full font-mono text-sm border border-gray-300 rounded-lg px-3 py-2
+                             focus:outline-none focus:ring-2 focus:ring-indigo-400 resize-none"
+                />
+              </div>
+
+              {triggerResult !== null && (
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Response</label>
+                  <pre className={`text-xs rounded-lg px-3 py-2 whitespace-pre-wrap break-all
+                    ${triggerResult.startsWith('Error:')
+                      ? 'bg-red-50 text-red-700 border border-red-200'
+                      : 'bg-gray-50 text-gray-700 border border-gray-200'}`}>
+                    {triggerResult}
+                  </pre>
+                </div>
+              )}
+            </div>
+
+            <div className="px-5 py-4 border-t border-gray-200 flex justify-end gap-2">
+              <button onClick={() => setShowTrigger(false)}
+                className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">
+                Close
+              </button>
+              <button onClick={sendTrigger} disabled={triggering}
+                className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg
+                           hover:bg-indigo-700 disabled:opacity-50">
+                {triggering ? 'Sending…' : '⚡ Send'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -15,17 +15,21 @@ import org.slf4j.LoggerFactory;
 import java.util.*;
 
 /**
- * Dynamically builds a Camel route from a stored FlowDefinition.
+ * Builds one or two Camel routes from a stored FlowDefinition:
  *
- * <p>HTTP_LISTENER source nodes use {@code direct:flow-{flowId}} so there are no dynamic
- * Spring MVC mappings — a single {@link TriggerController} handles all /trigger/** traffic
- * and dispatches here via {@link TriggerRegistry}.
- *
- * <p>Phase 1 constraint: flows are linear chains (one source node, no branching).
+ * <ol>
+ *   <li><b>Main route</b> — always {@code direct:flow-{flowId}}, carries the processing chain.
+ *       This is the entry point for both real triggers and the manual test trigger.
+ *   <li><b>Feeder route</b> (optional) — for non-HTTP sources (SCHEDULER, FILE_READER) a second
+ *       route connects the real source (quartz / file) to {@code direct:flow-{flowId}}.
+ *       HTTP_LISTENER flows use {@link TriggerController} instead of a feeder route.
+ * </ol>
  */
 public class FlowRouteBuilder extends RouteBuilder {
 
     private static final Logger log = LoggerFactory.getLogger(FlowRouteBuilder.class);
+
+    static final String TRIGGER_SUFFIX = "-trigger";
 
     private final String              routeId;
     private final FlowDefinition      definition;
@@ -63,14 +67,17 @@ public class FlowRouteBuilder extends RouteBuilder {
                 .handled(true);
 
         FlowNode sourceNode = chain.get(0);
-        String   fromUri    = resolveSourceUri(sourceNode);
+        String   directUri  = "direct:flow-" + flowId;
 
-        RouteDefinition route = from(fromUri)
+        // Wire the source to the direct endpoint (may add a feeder route)
+        configureSource(sourceNode, directUri);
+
+        // Main processing route — always starts from direct:
+        RouteDefinition route = from(directUri)
                 .routeId(routeId)
                 .process(exchange -> logService.log(flowId, null, "INFO",
                         "Flow triggered — exchange: " + exchange.getExchangeId()));
 
-        // Apply remaining nodes in order
         for (int i = 1; i < chain.size(); i++) {
             final FlowNode node = chain.get(i);
             ConnectorHandler handler = registry.get(node.type());
@@ -82,23 +89,63 @@ public class FlowRouteBuilder extends RouteBuilder {
         route.process(exchange -> logService.log(flowId, null, "INFO", "Flow execution completed"));
     }
 
-    /**
-     * For HTTP_LISTENER: registers path+method in TriggerRegistry and returns a
-     * {@code direct:flow-{flowId}} URI so no dynamic HTTP mapping is needed.
-     * For all other source types: delegates to the ConnectorHandler.
-     */
-    private String resolveSourceUri(FlowNode sourceNode) {
-        if ("HTTP_LISTENER".equals(sourceNode.type())) {
-            Map<String, Object> cfg = sourceNode.data() != null ? sourceNode.data().config() : Map.of();
-            String path   = cfg.getOrDefault("path",   "/webhook").toString();
-            String method = cfg.getOrDefault("method", "POST").toString();
-            triggerRegistry.register(method, path, flowId);
-            return "direct:flow-" + flowId;
+    // -----------------------------------------------------------------------
+    // Source wiring
+    // -----------------------------------------------------------------------
+
+    private void configureSource(FlowNode sourceNode, String directUri) {
+        Map<String, Object> cfg = sourceNode.data() != null
+                ? sourceNode.data().config() : Map.of();
+
+        switch (sourceNode.type()) {
+
+            case "HTTP_LISTENER" -> {
+                // Dispatched by TriggerController via TriggerRegistry — no feeder route needed
+                String path   = cfg.getOrDefault("path",   "/webhook").toString();
+                String method = cfg.getOrDefault("method", "POST").toString();
+                triggerRegistry.register(method, path, flowId);
+            }
+
+            case "SCHEDULER" -> {
+                String cron = cfg.getOrDefault("cron", "0/30 * * * * ?").toString();
+                // Quartz cron URIs use '+' instead of spaces
+                String encodedCron = cron.replace(" ", "+");
+                from("quartz://milan/" + flowId + "?cron=" + encodedCron + "&stateful=false")
+                        .routeId(routeId + TRIGGER_SUFFIX)
+                        .setBody().constant("")   // timers carry no payload
+                        .to(directUri);
+            }
+
+            case "FILE_READER" -> {
+                String  directory = cfg.getOrDefault("directory", "/tmp/milan-input").toString();
+                String  pattern   = cfg.getOrDefault("pattern",   ".*").toString();
+                boolean doDelete  = "delete".equals(cfg.getOrDefault("after", "move").toString());
+
+                String fileUri = "file://" + directory
+                        + "?include=" + pattern
+                        + "&delay=2000"
+                        + "&readLock=changed"
+                        + "&autoCreate=true"
+                        + (doDelete ? "&delete=true" : "&move=.done");
+
+                from(fileUri)
+                        .routeId(routeId + TRIGGER_SUFFIX)
+                        .convertBodyTo(String.class)
+                        .to(directUri);
+            }
+
+            default -> {
+                // Generic source connector — delegate to ConnectorHandler.buildFromUri()
+                ConnectorHandler handler = registry.get(sourceNode.type());
+                from(handler.buildFromUri(sourceNode))
+                        .routeId(routeId + TRIGGER_SUFFIX)
+                        .to(directUri);
+            }
         }
-        ConnectorHandler handler = registry.get(sourceNode.type());
-        return handler.buildFromUri(sourceNode);
     }
 
+    // -----------------------------------------------------------------------
+    // Graph traversal
     // -----------------------------------------------------------------------
 
     private List<FlowNode> buildNodeChain() {

@@ -64,4 +64,17 @@ public class FlowController {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
     }
+
+    @PostMapping("/{id}/trigger")
+    public ResponseEntity<String> trigger(@PathVariable UUID id,
+                                          @RequestBody(required = false) String body) {
+        try {
+            String result = flowService.trigger(id, body);
+            return ResponseEntity.ok(result);
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(e.getMessage());
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(e.getMessage());
+        }
+    }
 }

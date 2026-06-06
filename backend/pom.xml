@@ -64,6 +64,11 @@
       <groupId>org.apache.camel.springboot</groupId>
       <artifactId>camel-http-starter</artifactId>
     </dependency>
+    <!-- Cron-triggered flows -->
+    <dependency>
+      <groupId>org.apache.camel.springboot</groupId>
+      <artifactId>camel-quartz-starter</artifactId>
+    </dependency>
 
     <!-- Database -->
     <dependency>

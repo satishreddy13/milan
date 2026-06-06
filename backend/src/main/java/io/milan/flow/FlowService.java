@@ -70,6 +70,10 @@ public class FlowService {
         flowEngine.stopFlow(id);
     }
 
+    public String trigger(UUID id, String body) throws Exception {
+        return flowEngine.triggerFlow(id, body);
+    }
+
     // -----------------------------------------------------------------------
 
     private Flow find(UUID id) {

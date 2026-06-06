@@ -7,9 +7,10 @@ import io.milan.flow.FlowDefinition;
 import io.milan.flow.FlowRepository;
 import io.milan.flow.FlowStatus;
 import io.milan.log.ExecutionLogService;
+import org.apache.camel.CamelContext;
+import org.apache.camel.ProducerTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.apache.camel.CamelContext;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
@@ -31,19 +32,22 @@ public class FlowEngine {
     private final FlowRepository      flowRepository;
     private final ExecutionLogService logService;
     private final TriggerRegistry     triggerRegistry;
+    private final ProducerTemplate    producerTemplate;
 
     private final Map<UUID, String>        activeRoutes = new ConcurrentHashMap<>();
     private final Map<UUID, ReentrantLock> routeLocks   = new ConcurrentHashMap<>();
 
     public FlowEngine(CamelContext camelContext, ConnectorRegistry connectorRegistry,
                       ObjectMapper objectMapper, FlowRepository flowRepository,
-                      ExecutionLogService logService, TriggerRegistry triggerRegistry) {
+                      ExecutionLogService logService, TriggerRegistry triggerRegistry,
+                      ProducerTemplate producerTemplate) {
         this.camelContext      = camelContext;
         this.connectorRegistry = connectorRegistry;
         this.objectMapper      = objectMapper;
         this.flowRepository    = flowRepository;
         this.logService        = logService;
         this.triggerRegistry   = triggerRegistry;
+        this.producerTemplate  = producerTemplate;
     }
 
     // -----------------------------------------------------------------------
@@ -84,9 +88,9 @@ public class FlowEngine {
         try {
             String routeId = activeRoutes.remove(flowId);
             if (routeId != null) {
-                camelContext.getRouteController().stopRoute(routeId);
-                camelContext.removeRoute(routeId);
-                log.info("Stopped route {} for flow {}", routeId, flowId);
+                stopAndRemove(routeId + FlowRouteBuilder.TRIGGER_SUFFIX);
+                stopAndRemove(routeId);
+                log.info("Stopped flow {}", flowId);
             }
             triggerRegistry.deregister(flowId);
             flowRepository.findById(flowId).ifPresent(flow -> {
@@ -96,6 +100,21 @@ public class FlowEngine {
         } finally {
             lock.unlock();
         }
+    }
+
+    /**
+     * Sends {@code body} directly to the flow's {@code direct:flow-{id}} endpoint and
+     * returns the processed result. The flow must be ACTIVE.
+     */
+    public String triggerFlow(UUID flowId, String body) throws Exception {
+        Flow flow = flowRepository.findById(flowId)
+                .orElseThrow(() -> new IllegalArgumentException("Flow not found: " + flowId));
+        if (flow.getStatus() != FlowStatus.ACTIVE) {
+            throw new IllegalStateException("Flow is not active — start it first");
+        }
+        Object result = producerTemplate.requestBody("direct:flow-" + flowId,
+                body != null ? body : "");
+        return result != null ? result.toString() : "";
     }
 
     public boolean isActive(UUID flowId) {
@@ -112,22 +131,41 @@ public class FlowEngine {
         try {
             String existing = activeRoutes.get(flow.getId());
             if (existing != null) {
-                camelContext.getRouteController().stopRoute(existing);
-                camelContext.removeRoute(existing);
+                stopAndRemove(existing + FlowRouteBuilder.TRIGGER_SUFFIX);
+                stopAndRemove(existing);
             }
 
-            FlowDefinition definition = objectMapper.readValue(flow.getDefinition(), FlowDefinition.class);
+            FlowDefinition definition = objectMapper.readValue(
+                    flow.getDefinition(), FlowDefinition.class);
             String routeId = "milan-flow-" + flow.getId();
 
             FlowRouteBuilder builder = new FlowRouteBuilder(
-                    routeId, definition, connectorRegistry, logService, flow.getId(), triggerRegistry);
+                    routeId, definition, connectorRegistry, logService,
+                    flow.getId(), triggerRegistry);
             camelContext.addRoutes(builder);
+
+            // Start feeder route first (if it exists), then the main processing route
+            String triggerRouteId = routeId + FlowRouteBuilder.TRIGGER_SUFFIX;
+            if (camelContext.getRoute(triggerRouteId) != null) {
+                camelContext.getRouteController().startRoute(triggerRouteId);
+            }
             camelContext.getRouteController().startRoute(routeId);
 
             activeRoutes.put(flow.getId(), routeId);
             log.info("Started route {} for flow '{}'", routeId, flow.getName());
         } finally {
             lock.unlock();
+        }
+    }
+
+    private void stopAndRemove(String routeId) {
+        try {
+            if (camelContext.getRoute(routeId) != null) {
+                camelContext.getRouteController().stopRoute(routeId);
+                camelContext.removeRoute(routeId);
+            }
+        } catch (Exception e) {
+            log.warn("Failed to stop/remove route {}: {}", routeId, e.getMessage());
         }
     }
 }

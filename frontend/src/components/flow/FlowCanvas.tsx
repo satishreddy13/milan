@@ -10,6 +10,9 @@ import { HttpListenerNode } from '../nodes/HttpListenerNode'
 import { HttpRequestNode }  from '../nodes/HttpRequestNode'
 import { LoggerNode }       from '../nodes/LoggerNode'
 import { SetBodyNode }      from '../nodes/SetBodyNode'
+import { SchedulerNode }    from '../nodes/SchedulerNode'
+import { FileReaderNode }   from '../nodes/FileReaderNode'
+import { FileWriterNode }   from '../nodes/FileWriterNode'
 import type { ConnectorDescriptor } from '../../types/connector'
 
 // Must be defined OUTSIDE the component to avoid remounting on every render
@@ -18,6 +21,9 @@ const nodeTypes = {
   HTTP_REQUEST:  HttpRequestNode,
   LOGGER:        LoggerNode,
   SET_BODY:      SetBodyNode,
+  SCHEDULER:     SchedulerNode,
+  FILE_READER:   FileReaderNode,
+  FILE_WRITER:   FileWriterNode,
 }
 
 interface Props {

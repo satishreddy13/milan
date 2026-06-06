@@ -7,6 +7,10 @@ export const flowsApi = {
   create: (req: CreateFlowRequest)            => client.post<Flow>('/flows', req).then(r => r.data),
   update: (id: string, req: UpdateFlowRequest) => client.put<Flow>(`/flows/${id}`, req).then(r => r.data),
   delete: (id: string)                        => client.delete(`/flows/${id}`),
-  start:  (id: string)                        => client.post(`/flows/${id}/start`),
-  stop:   (id: string)                        => client.post(`/flows/${id}/stop`),
+  start:   (id: string)                        => client.post(`/flows/${id}/start`),
+  stop:    (id: string)                        => client.post(`/flows/${id}/stop`),
+  trigger: (id: string, body: string)          => client.post<string>(`/flows/${id}/trigger`, body, {
+    headers: { 'Content-Type': 'text/plain' },
+    transformResponse: [(data) => data],   // keep raw string, don't JSON-parse
+  }),
 }
