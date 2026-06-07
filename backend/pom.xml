@@ -69,6 +69,16 @@
       <groupId>org.apache.camel.springboot</groupId>
       <artifactId>camel-quartz-starter</artifactId>
     </dependency>
+    <!-- CSV parsing/writing -->
+    <dependency>
+      <groupId>org.apache.camel.springboot</groupId>
+      <artifactId>camel-csv-starter</artifactId>
+    </dependency>
+    <!-- JSON serialization for CSV→JSON conversion -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+    </dependency>
 
     <!-- Database -->
     <dependency>

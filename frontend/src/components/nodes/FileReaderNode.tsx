@@ -11,6 +11,9 @@ export function FileReaderNode({ data, selected }: NodeProps) {
           {config.directory}
         </span>
       )}
+      {config.parser && config.parser !== 'none' && (
+        <span className="text-violet-500 font-medium">{config.parser.toUpperCase()}</span>
+      )}
     </BaseNode>
   )
 }

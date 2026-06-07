@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import type { Node } from '@xyflow/react'
 import { flowsApi }        from '../api/flows'
 import { connectorsApi }   from '../api/connectors'
 import { useFlowStore }    from '../store/flowStore'
+import { useToast }        from '../context/ToastContext'
 import { ConnectorPalette } from '../components/flow/ConnectorPalette'
 import { FlowCanvas }       from '../components/flow/FlowCanvas'
 import { NodeConfigPanel }  from '../components/flow/NodeConfigPanel'
@@ -21,6 +22,11 @@ export function FlowEditorPage() {
   const [triggerBody, setTriggerBody]   = useState('{\n  "key": "value"\n}')
   const [triggerResult, setTriggerResult] = useState<string | null>(null)
   const [triggering, setTriggering]     = useState(false)
+
+  const { toast } = useToast()
+  const [editingName, setEditingName]   = useState(false)
+  const [nameVal, setNameVal]           = useState('')
+  const nameInputRef = useRef<HTMLInputElement>(null)
 
   const { currentFlow, nodes, edges, selectedNode, dirty,
           setCurrentFlow, setNodes, setEdges, setSelectedNode, setDirty } = useFlowStore()
@@ -45,6 +51,7 @@ export function FlowEditorPage() {
   const save = async () => {
     if (!id) return
     setSaving(true)
+    toast('Saving…', 'info')
     try {
       const definition: FlowDefinition = {
         nodes: nodes.map(n => ({
@@ -58,9 +65,27 @@ export function FlowEditorPage() {
       const updated = await flowsApi.update(id, { definition })
       setCurrentFlow(updated)
       setDirty(false)
+      toast('Saved', 'success')
+    } catch {
+      toast('Save failed', 'error')
     } finally {
       setSaving(false)
     }
+  }
+
+  const saveName = async () => {
+    if (!id || !nameVal.trim() || nameVal === currentFlow?.name) {
+      setEditingName(false)
+      return
+    }
+    try {
+      const updated = await flowsApi.update(id, { name: nameVal.trim() })
+      setCurrentFlow(updated)
+      toast('Renamed', 'success')
+    } catch {
+      toast('Rename failed', 'error')
+    }
+    setEditingName(false)
   }
 
   const toggleFlow = async () => {
@@ -77,7 +102,7 @@ export function FlowEditorPage() {
       setCurrentFlow(updated)
     } catch (err: any) {
       const msg = err?.response?.data || err?.message || 'Unknown error'
-      alert(`Failed to start flow: ${msg}`)
+      toast(`Failed to start flow: ${msg}`, 'error')
     } finally {
       setStarting(false)
     }
@@ -112,9 +137,24 @@ export function FlowEditorPage() {
         <button onClick={() => navigate('/')}
           className="text-gray-400 hover:text-gray-600 text-sm">← Back</button>
         <span className="text-gray-300">|</span>
-        <h1 className="font-semibold text-gray-800 text-sm truncate">
-          {currentFlow?.name ?? 'Loading…'}
-        </h1>
+        {editingName ? (
+          <input
+            ref={nameInputRef}
+            value={nameVal}
+            onChange={e => setNameVal(e.target.value)}
+            onBlur={saveName}
+            onKeyDown={e => { if (e.key === 'Enter') saveName(); if (e.key === 'Escape') setEditingName(false) }}
+            className="font-semibold text-gray-800 text-sm border-b border-blue-400
+                       outline-none bg-transparent w-48"
+          />
+        ) : (
+          <button
+            title="Click to rename"
+            onClick={() => { setNameVal(currentFlow?.name ?? ''); setEditingName(true); setTimeout(() => nameInputRef.current?.select(), 0) }}
+            className="font-semibold text-gray-800 text-sm hover:text-blue-600 transition-colors">
+            {currentFlow?.name ?? 'Loading…'}
+          </button>
+        )}
         {currentFlow && (
           <span className={`text-xs px-2 py-0.5 rounded-full font-medium
             ${statusColors[currentFlow.status] ?? ''}`}>

@@ -1,5 +1,6 @@
 package io.milan.engine;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.milan.connector.ConnectorHandler;
 import io.milan.connector.ConnectorRegistry;
 import io.milan.flow.FlowDefinition;
@@ -8,6 +9,7 @@ import io.milan.flow.FlowNode;
 import io.milan.log.ExecutionLogService;
 import org.apache.camel.Exchange;
 import org.apache.camel.builder.RouteBuilder;
+import org.apache.camel.dataformat.csv.CsvDataFormat;
 import org.apache.camel.model.RouteDefinition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -122,21 +124,42 @@ public class FlowRouteBuilder extends RouteBuilder {
             }
 
             case "FILE_READER" -> {
-                String  directory = cfg.getOrDefault("directory", "/tmp/milan-input").toString();
-                String  pattern   = cfg.getOrDefault("pattern",   ".*").toString();
-                boolean doDelete  = "delete".equals(cfg.getOrDefault("after", "move").toString());
+                String directory  = cfg.getOrDefault("directory",  "/tmp/milan-input").toString();
+                String pattern    = cfg.getOrDefault("pattern",    ".*").toString();
+                String after      = cfg.getOrDefault("after",      "move").toString();
+                String archiveDir = cfg.getOrDefault("archiveDir", ".done").toString();
+                String charset    = cfg.getOrDefault("charset",    "UTF-8").toString();
+                String parser     = cfg.getOrDefault("parser",     "none").toString();
+                boolean hasHeader = !"false".equals(cfg.getOrDefault("hasHeader", "true").toString());
 
                 String fileUri = "file://" + directory
-                        + "?include=" + pattern
+                        + "?include="     + pattern
                         + "&delay=2000"
                         + "&readLock=changed"
                         + "&autoCreate=true"
-                        + (doDelete ? "&delete=true" : "&move=.done");
+                        + "&charset="     + charset
+                        + switch (after) {
+                            case "delete" -> "&delete=true";
+                            case "none"   -> "&noop=true";
+                            default       -> "&move=" + archiveDir;
+                          };
 
-                from(fileUri)
+                var feeder = from(fileUri)
                         .routeId(routeId + TRIGGER_SUFFIX)
-                        .convertBodyTo(String.class)
-                        .to(directUri);
+                        .convertBodyTo(String.class);
+
+                if ("csv".equals(parser)) {
+                    // Parse CSV → List<Map<String,String>> → JSON array string
+                    CsvDataFormat csvFmt = new CsvDataFormat();
+                    csvFmt.setUseMaps(hasHeader);
+                    feeder.unmarshal(csvFmt)
+                          .process(exchange -> {
+                              Object body = exchange.getIn().getBody();
+                              exchange.getIn().setBody(new ObjectMapper().writeValueAsString(body));
+                          });
+                }
+
+                feeder.to(directUri);
             }
 
             default -> {
