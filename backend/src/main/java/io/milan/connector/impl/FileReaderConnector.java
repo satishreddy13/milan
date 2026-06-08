@@ -16,6 +16,13 @@ import java.util.List;
  *   delete → deleted immediately
  *   none   → left in place (reprocessed on next poll — use only for testing)
  *
+ * Archiving always fires via onCompletion — even when a Filter node rejects the exchange —
+ * so files never loop back into the input directory.
+ *
+ * When duplicateAction=rename (default) and the archive already contains a file with the
+ * same name, the new file is saved as  basename_yyyyMMdd-HHmmssSSS.ext  instead of
+ * overwriting the existing copy.
+ *
  * Optional CSV parser: when parser=csv the body is parsed into a JSON array of objects.
  * The first row is used as headers when hasHeader=true.
  */
@@ -33,16 +40,18 @@ public class FileReaderConnector implements ConnectorHandler {
                 "TRIGGER",
                 "Polls a directory and triggers the flow for each new file",
                 List.of(
-                        ConfigField.text  ("directory",  "Directory",            true,  "/tmp/milan-input"),
-                        ConfigField.text  ("pattern",    "File Pattern (regex)", false, ".*"),
-                        ConfigField.select("after",      "After Processing",     true,  "move",
+                        ConfigField.text  ("directory",       "Directory",               true,  "/tmp/milan-input"),
+                        ConfigField.text  ("pattern",         "File Pattern (regex)",    false, ".*"),
+                        ConfigField.select("after",           "After Processing",        true,  "move",
                                           "move", "delete", "none"),
-                        ConfigField.text  ("archiveDir", "Archive Directory",    false, ".done"),
-                        ConfigField.select("charset",    "Charset",              false, "UTF-8",
+                        ConfigField.text  ("archiveDir",      "Archive Directory",       false, ".done"),
+                        ConfigField.select("duplicateAction", "If Archive File Exists",  false, "rename",
+                                          "rename", "overwrite", "skip"),
+                        ConfigField.select("charset",         "Charset",                 false, "UTF-8",
                                           "UTF-8", "UTF-16", "ISO-8859-1"),
-                        ConfigField.select("parser",     "Parse As",             false, "none",
+                        ConfigField.select("parser",          "Parse As",                false, "none",
                                           "none", "csv"),
-                        ConfigField.select("hasHeader",  "CSV Has Header Row",   false, "true",
+                        ConfigField.select("hasHeader",       "CSV Has Header Row",      false, "true",
                                           "true", "false")
                 )
         );

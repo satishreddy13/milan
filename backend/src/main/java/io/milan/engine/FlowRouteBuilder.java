@@ -18,6 +18,12 @@ import org.apache.camel.model.TryDefinition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -268,6 +274,81 @@ public class FlowRouteBuilder extends RouteBuilder {
     }
 
     // -----------------------------------------------------------------------
+    // File archiving — called from FILE_READER onCompletion()
+    // -----------------------------------------------------------------------
+
+    /**
+     * Moves or deletes the source file after the exchange completes.
+     *
+     * <p>Invoked via {@code onCompletion()} so it fires regardless of whether the exchange
+     * succeeded, was stopped by a Filter node, or failed — preventing the "continuous re-read"
+     * loop that occurs when a filter rejects a file and Camel's built-in move is never triggered.
+     *
+     * @param duplicateAction  {@code rename} (default) — add a timestamp suffix to avoid overwrite;
+     *                         {@code overwrite} — replace the existing archive file;
+     *                         {@code skip} — delete from source without archiving if the target exists
+     */
+    private static void archiveSourceFile(Exchange exchange,
+                                          String after,
+                                          String archiveDir,
+                                          String duplicateAction) {
+        String absPath = exchange.getIn().getHeader("CamelFileAbsolutePath", String.class);
+        if (absPath == null) return;
+
+        File source = new File(absPath);
+        if (!source.exists()) return;  // already moved by a previous completion (e.g. restart race)
+
+        switch (after) {
+            case "delete" -> {
+                if (!source.delete()) {
+                    log.warn("FILE_READER: failed to delete processed file: {}", absPath);
+                }
+            }
+            case "none" -> {
+                // Intentionally left in the source directory (e.g. for testing).
+                // The readLock will re-read it on the next poll — warn so the user knows.
+                log.warn("FILE_READER: after=none — file will be re-read on next poll: {}", source.getName());
+            }
+            default -> {  // "move"
+                File destDir = Paths.get(archiveDir).isAbsolute()
+                        ? new File(archiveDir)
+                        : new File(source.getParentFile(), archiveDir);
+                destDir.mkdirs();
+
+                String name     = source.getName();
+                String baseName = name.contains(".") ? name.substring(0, name.lastIndexOf('.')) : name;
+                String ext      = name.contains(".") ? name.substring(name.lastIndexOf('.'))    : "";
+                File   dest     = new File(destDir, name);
+
+                if (dest.exists()) {
+                    switch (duplicateAction) {
+                        case "overwrite" -> { /* dest already set; Files.move with REPLACE_EXISTING handles it */ }
+                        case "skip" -> {
+                            // Archive already has this file — remove from source to stop re-read loop
+                            if (!source.delete()) {
+                                log.warn("FILE_READER: skip duplicate — failed to delete source: {}", absPath);
+                            }
+                            log.info("FILE_READER: skipped duplicate '{}' (already in archive)", name);
+                            return;
+                        }
+                        default -> {  // "rename" — add timestamp suffix
+                            String ts = new SimpleDateFormat("yyyyMMdd-HHmmssSSS").format(new Date());
+                            dest = new File(destDir, baseName + "_" + ts + ext);
+                        }
+                    }
+                }
+
+                try {
+                    Files.move(source.toPath(), dest.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                    log.debug("FILE_READER: archived '{}' → '{}'", source.getName(), dest.getName());
+                } catch (IOException e) {
+                    log.error("FILE_READER: failed to archive {} → {}: {}", source, dest, e.getMessage());
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // CHOICE segment
     // -----------------------------------------------------------------------
 
@@ -326,23 +407,34 @@ public class FlowRouteBuilder extends RouteBuilder {
             }
 
             case "FILE_READER" -> {
-                String  directory  = cfg.getOrDefault("directory",  "/tmp/milan-input").toString();
-                String  pattern    = cfg.getOrDefault("pattern",    ".*").toString();
-                String  after      = cfg.getOrDefault("after",      "move").toString();
-                String  archiveDir = cfg.getOrDefault("archiveDir", ".done").toString();
-                String  charset    = cfg.getOrDefault("charset",    "UTF-8").toString();
-                String  parser     = cfg.getOrDefault("parser",     "none").toString();
-                boolean hasHeader  = !"false".equals(cfg.getOrDefault("hasHeader", "true").toString());
+                String  directory       = cfg.getOrDefault("directory",       "/tmp/milan-input").toString();
+                String  pattern         = cfg.getOrDefault("pattern",         ".*").toString();
+                String  after           = cfg.getOrDefault("after",           "move").toString();
+                String  archiveDir      = cfg.getOrDefault("archiveDir",      ".done").toString();
+                String  duplicateAction = cfg.getOrDefault("duplicateAction", "rename").toString();
+                String  charset         = cfg.getOrDefault("charset",         "UTF-8").toString();
+                String  parser          = cfg.getOrDefault("parser",          "none").toString();
+                boolean hasHeader       = !"false".equals(cfg.getOrDefault("hasHeader", "true").toString());
 
+                // Always noop=true — archiving is handled explicitly in onCompletion() below.
+                // This guarantees the file is moved/deleted even when a Filter node stops the
+                // exchange early, preventing the "continuous re-read" loop.
                 String fileUri = "file://" + directory
-                        + "?include=" + pattern + "&delay=2000&readLock=changed&autoCreate=true&charset=" + charset
-                        + switch (after) {
-                            case "delete" -> "&delete=true";
-                            case "none"   -> "&noop=true";
-                            default       -> "&move=" + archiveDir;
-                          };
+                        + "?include=" + pattern
+                        + "&delay=2000"
+                        + "&readLock=changed"
+                        + "&autoCreate=true"
+                        + "&charset=" + charset
+                        + "&noop=true";
 
-                var feeder = from(fileUri).routeId(routeId + TRIGGER_SUFFIX).convertBodyTo(String.class);
+                var feeder = from(fileUri)
+                        .routeId(routeId + TRIGGER_SUFFIX)
+                        // onCompletion fires for ALL outcomes: success, filter-stop, exception
+                        .onCompletion()
+                            .process(exchange -> archiveSourceFile(
+                                    exchange, after, archiveDir, duplicateAction))
+                        .end()
+                        .convertBodyTo(String.class);
 
                 if ("csv".equals(parser)) {
                     CsvDataFormat csvFmt = new CsvDataFormat();
