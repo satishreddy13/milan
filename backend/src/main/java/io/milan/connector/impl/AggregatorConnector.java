@@ -67,6 +67,11 @@ public class AggregatorConnector implements ConnectorHandler {
             agg.completionFromBatchConsumer().completionTimeout(5_000);
         }
 
+        boolean forceOnStop  = "true".equals(str(node, "forceCompletionOnStop",    "false"));
+        boolean discardOnTimeout = "true".equals(str(node, "discardOnCompletionTimeout", "false"));
+        if (forceOnStop)      agg.forceCompletionOnStop();
+        if (discardOnTimeout) agg.discardOnCompletionTimeout();
+
         // After aggregation, convert List → JSON string for "collect" strategy
         if ("collect".equals(strategy)) {
             agg.process(exchange -> {
@@ -93,7 +98,9 @@ public class AggregatorConnector implements ConnectorHandler {
                                                "collect", "concatenate", "latest"),
                         ConfigField.text      ("completionSize",    "Complete After N Messages",  false, "0"),
                         ConfigField.text      ("completionTimeout",  "Complete After (ms)",        false, "0"),
-                        ConfigField.text      ("separator",          "Separator (concatenate)",    false, "\\n")
+                        ConfigField.text      ("separator",               "Separator (concatenate)",       false, "\\n"),
+                        ConfigField.select   ("forceCompletionOnStop",    "Force Complete on Route Stop",  false, "false", "false", "true"),
+                        ConfigField.select   ("discardOnCompletionTimeout","Discard on Timeout",           false, "false", "false", "true")
                 )
         );
     }
