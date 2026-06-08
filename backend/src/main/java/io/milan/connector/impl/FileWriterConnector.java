@@ -4,9 +4,8 @@ import io.milan.connector.ConfigField;
 import io.milan.connector.ConnectorDescriptor;
 import io.milan.connector.ConnectorHandler;
 import io.milan.flow.FlowNode;
+import org.apache.camel.dataformat.csv.CsvDataFormat;
 import org.apache.camel.model.ProcessorDefinition;
-import org.apache.commons.csv.CSVFormat;
-import org.apache.commons.csv.CSVPrinter;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -23,7 +22,6 @@ public class FileWriterConnector implements ConnectorHandler {
     @Override public String  getType()  { return "FILE_WRITER"; }
     @Override public boolean isSource() { return false; }
 
-
     @Override
     public void apply(ProcessorDefinition<?> route, FlowNode node, UUID flowId) {
         String  directory = str(node, "directory", "/tmp/milan-output");
@@ -33,68 +31,49 @@ public class FileWriterConnector implements ConnectorHandler {
         String  format    = str(node, "format",    "text");
 
         if ("csv".equals(format)) {
-            // If the body is already a String (raw CSV read from file, JSON text, etc.)
-            // write it as-is — no re-serialisation needed.
-            //
-            // For structured bodies (List<Map<String,Object>> from a CSV_PARSER node)
-            // serialize to CSV using Apache Commons CSV directly. This avoids the Camel
-            // CsvDataFormat lifecycle issue where the internal CsvMarshaller is null when
-            // the DataFormat is instantiated outside of Camel's route build lifecycle.
-            final String capturedCharset = charset;
+            // Normalise the body to List<List<?>> — the form Camel's CsvDataFormat expects
+            // for marshalling. Handles three incoming shapes:
+            //   String             → already serialised; skip conversion
+            //   Map<?,?>           → single row from a Splitter; wrap in a list
+            //   Iterable<Map<?,?>> → full table (List<Map>) from a CSV_PARSER node
+            //   Iterable<Iterable> → already row-oriented; pass through
             route.process(exchange -> {
                 Object body = exchange.getIn().getBody();
                 if (body instanceof String) {
-                    return;  // already text — write as-is
+                    return;  // already text — write as-is, skip marshal step
                 }
-                if (body instanceof Map<?, ?> singleRow) {
-                    // Single Map row (e.g. from a Splitter) — write as one CSV data row (no header)
-                    StringBuilder sb = new StringBuilder();
-                    try (CSVPrinter printer = new CSVPrinter(sb, CSVFormat.DEFAULT)) {
-                        printer.printRecord(singleRow.values());
+
+                List<List<?>> rows = new ArrayList<>();
+                if (body instanceof Map<?, ?> map) {
+                    rows.add(new ArrayList<>(map.values()));
+                } else if (body instanceof Iterable<?> iterable) {
+                    for (Object item : iterable) {
+                        if (item instanceof Map<?, ?> m) {
+                            rows.add(new ArrayList<>(m.values()));
+                        } else if (item instanceof Iterable<?> row) {
+                            List<Object> cols = new ArrayList<>();
+                            row.forEach(cols::add);
+                            rows.add(cols);
+                        }
                     }
-                    exchange.getIn().setBody(sb.toString());
-                    return;
                 }
-                if (!(body instanceof Iterable<?> iterable)) {
-                    return;  // unknown type — let file component write toString()
-                }
-                List<Object> rows = new ArrayList<>();
-                iterable.forEach(rows::add);
+
                 if (rows.isEmpty()) {
                     exchange.getIn().setBody("");
                     return;
                 }
-                StringBuilder sb = new StringBuilder();
-                if (rows.get(0) instanceof Map<?, ?> firstRow) {
-                    // List<Map<String,Object>> — write with header row
-                    String[] headers = firstRow.keySet().stream()
-                            .map(Object::toString).toArray(String[]::new);
-                    try (CSVPrinter printer = new CSVPrinter(sb,
-                            CSVFormat.DEFAULT.builder().setHeader(headers).build())) {
-                        for (Object row : rows) {
-                            if (row instanceof Map<?, ?> map) {
-                                List<String> values = java.util.Arrays.stream(headers)
-                                        .map(h -> {
-                                            Object v = map.get(h);
-                                            return v != null ? v.toString() : "";
-                                        })
-                                        .toList();
-                                printer.printRecord(values);
-                            }
-                        }
-                    }
-                } else {
-                    // List<List<?>> — write rows as-is
-                    try (CSVPrinter printer = new CSVPrinter(sb, CSVFormat.DEFAULT)) {
-                        for (Object row : rows) {
-                            if (row instanceof Iterable<?> cols) {
-                                printer.printRecord(cols);
-                            }
-                        }
-                    }
-                }
-                exchange.getIn().setBody(sb.toString());
+                exchange.getIn().setBody(rows);
             });
+
+            // Camel's CsvDataFormat marshaller is initialised lazily during start().
+            // When routes are added to a running CamelContext the lifecycle may not call
+            // start() automatically, so we do it here explicitly before wiring the format
+            // into the route to guarantee the internal CsvMarshaller is non-null.
+            CsvDataFormat csvFmt = new CsvDataFormat();
+            try { csvFmt.start(); } catch (Exception e) {
+                throw new RuntimeException("CsvDataFormat failed to start", e);
+            }
+            route.marshal(csvFmt);
         }
 
         String uri = "file://" + directory
@@ -103,11 +82,6 @@ public class FileWriterConnector implements ConnectorHandler {
                 + "&charset="     + charset
                 + (append ? "&fileExist=Append" : "&fileExist=Override");
 
-        // Clear the CamelFileName header that a FILE_READER upstream sets on the exchange.
-        // Without this the Camel file producer ignores the configured fileName and writes
-        // using the input file's name instead, causing "Cannot store file" failures when
-        // the header contains a path the producer cannot resolve.
-        route.removeHeader("CamelFileName");
         route.to(uri);
     }
 
