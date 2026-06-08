@@ -112,15 +112,21 @@ public class FlowRouteBuilder extends RouteBuilder {
                 .process(exchange -> logService.log(flowId, null, "INFO",
                         "Flow triggered — exchange: " + exchange.getExchangeId()));
 
+        // Follow ALL outgoing edges from the source node in sequence.
+        // A source can have multiple outgoing edges (e.g. a Logger then a Router) — each is
+        // chained onto the main route in edge-list order, not just the first.
         List<FlowEdge> firstEdges = edgesBySource.getOrDefault(sourceNode.id(), List.of());
-        if (!firstEdges.isEmpty()) {
-            FlowNode first = nodeById.get(firstEdges.get(0).target());
-            if (first != null && !STANDALONE_TYPES.contains(first.type())) {
-                buildRouteSegment(mainRoute, first, nodeById, edgesBySource, new HashSet<>(), null);
-                return;
+        boolean builtAny = false;
+        for (FlowEdge edge : firstEdges) {
+            FlowNode next = nodeById.get(edge.target());
+            if (next != null && !STANDALONE_TYPES.contains(next.type())) {
+                buildRouteSegment(mainRoute, next, nodeById, edgesBySource, new HashSet<>(), null);
+                builtAny = true;
             }
         }
-        mainRoute.process(exchange -> logService.log(flowId, null, "INFO", "Flow execution completed"));
+        if (!builtAny) {
+            mainRoute.process(exchange -> logService.log(flowId, null, "INFO", "Flow execution completed"));
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -359,24 +365,32 @@ public class FlowRouteBuilder extends RouteBuilder {
                                     Set<String> visited) {
         String condition = strCfg(choiceNode, "condition", "${body} != null");
 
-        List<FlowEdge> outgoing    = edgesBySource.getOrDefault(choiceNode.id(), List.of());
-        FlowEdge whenEdge          = outgoing.stream().filter(e -> "when".equals(e.sourceHandle())).findFirst().orElse(null);
-        FlowEdge otherwiseEdge     = outgoing.stream().filter(e -> "otherwise".equals(e.sourceHandle())).findFirst().orElse(null);
+        List<FlowEdge> outgoing      = edgesBySource.getOrDefault(choiceNode.id(), List.of());
+        // Collect ALL edges per handle in edge-list order; each is chained sequentially
+        // inside its branch so users can connect multiple nodes to the same handle.
+        List<FlowEdge> whenEdges      = outgoing.stream().filter(e -> "when".equals(e.sourceHandle())).collect(Collectors.toList());
+        List<FlowEdge> otherwiseEdges = outgoing.stream().filter(e -> "otherwise".equals(e.sourceHandle())).collect(Collectors.toList());
 
         ChoiceDefinition choice = current.choice();
 
         var when = choice.when().simple(condition);
         when.process(exchange -> logService.log(flowId, choiceNode.id(), "INFO", "Choice → when branch"));
-        if (whenEdge != null) {
-            FlowNode whenNext = nodeById.get(whenEdge.target());
+        for (FlowEdge edge : whenEdges) {
+            FlowNode whenNext = nodeById.get(edge.target());
             if (whenNext != null) buildRouteSegment(when, whenNext, nodeById, edgesBySource, new HashSet<>(visited), null);
+        }
+        if (whenEdges.isEmpty()) {
+            when.process(exchange -> logService.log(flowId, null, "INFO", "Flow execution completed"));
         }
 
         var otherwise = choice.otherwise();
         otherwise.process(exchange -> logService.log(flowId, choiceNode.id(), "INFO", "Choice → otherwise branch"));
-        if (otherwiseEdge != null) {
-            FlowNode otherwiseNext = nodeById.get(otherwiseEdge.target());
+        for (FlowEdge edge : otherwiseEdges) {
+            FlowNode otherwiseNext = nodeById.get(edge.target());
             if (otherwiseNext != null) buildRouteSegment(otherwise, otherwiseNext, nodeById, edgesBySource, new HashSet<>(visited), null);
+        }
+        if (otherwiseEdges.isEmpty()) {
+            otherwise.process(exchange -> logService.log(flowId, null, "INFO", "Flow execution completed"));
         }
 
         choice.end();

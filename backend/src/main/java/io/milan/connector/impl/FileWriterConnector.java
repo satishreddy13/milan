@@ -1,14 +1,15 @@
 package io.milan.connector.impl;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.milan.connector.ConfigField;
 import io.milan.connector.ConnectorDescriptor;
 import io.milan.connector.ConnectorHandler;
 import io.milan.flow.FlowNode;
-import org.apache.camel.dataformat.csv.CsvDataFormat;
 import org.apache.camel.model.ProcessorDefinition;
+import org.apache.commons.csv.CSVFormat;
+import org.apache.commons.csv.CSVPrinter;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -22,7 +23,6 @@ public class FileWriterConnector implements ConnectorHandler {
     @Override public String  getType()  { return "FILE_WRITER"; }
     @Override public boolean isSource() { return false; }
 
-    private static final ObjectMapper JSON = new ObjectMapper();
 
     @Override
     public void apply(ProcessorDefinition<?> route, FlowNode node, UUID flowId) {
@@ -32,11 +32,60 @@ public class FileWriterConnector implements ConnectorHandler {
         String  charset   = str(node, "charset",   "UTF-8");
         String  format    = str(node, "format",    "text");
 
-        // If format=csv and body is a JSON array, marshal it back to CSV first
         if ("csv".equals(format)) {
-            CsvDataFormat csv = new CsvDataFormat();
-            csv.setHeaderDisabled(false);
-            route.marshal(csv);
+            // If the body is already a String (raw CSV read from file, JSON text, etc.)
+            // write it as-is — no re-serialisation needed.
+            //
+            // For structured bodies (List<Map<String,Object>> from a CSV_PARSER node)
+            // serialize to CSV using Apache Commons CSV directly. This avoids the Camel
+            // CsvDataFormat lifecycle issue where the internal CsvMarshaller is null when
+            // the DataFormat is instantiated outside of Camel's route build lifecycle.
+            final String capturedCharset = charset;
+            route.process(exchange -> {
+                Object body = exchange.getIn().getBody();
+                if (body instanceof String) {
+                    return;  // already text — write as-is
+                }
+                if (!(body instanceof Iterable<?> iterable)) {
+                    return;  // unknown type — let file component write toString()
+                }
+                List<Object> rows = new ArrayList<>();
+                iterable.forEach(rows::add);
+                if (rows.isEmpty()) {
+                    exchange.getIn().setBody("");
+                    return;
+                }
+                StringBuilder sb = new StringBuilder();
+                if (rows.get(0) instanceof Map<?, ?> firstRow) {
+                    // List<Map<String,Object>> — write with header row
+                    String[] headers = firstRow.keySet().stream()
+                            .map(Object::toString).toArray(String[]::new);
+                    try (CSVPrinter printer = new CSVPrinter(sb,
+                            CSVFormat.DEFAULT.builder().setHeader(headers).build())) {
+                        for (Object row : rows) {
+                            if (row instanceof Map<?, ?> map) {
+                                List<String> values = java.util.Arrays.stream(headers)
+                                        .map(h -> {
+                                            Object v = map.get(h);
+                                            return v != null ? v.toString() : "";
+                                        })
+                                        .toList();
+                                printer.printRecord(values);
+                            }
+                        }
+                    }
+                } else {
+                    // List<List<?>> — write rows as-is
+                    try (CSVPrinter printer = new CSVPrinter(sb, CSVFormat.DEFAULT)) {
+                        for (Object row : rows) {
+                            if (row instanceof Iterable<?> cols) {
+                                printer.printRecord(cols);
+                            }
+                        }
+                    }
+                }
+                exchange.getIn().setBody(sb.toString());
+            });
         }
 
         String uri = "file://" + directory
