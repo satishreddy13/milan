@@ -10,6 +10,7 @@ import io.milan.log.ExecutionLogService;
 import org.apache.camel.Exchange;
 import org.apache.camel.builder.RouteBuilder;
 import org.apache.camel.dataformat.csv.CsvDataFormat;
+import org.apache.camel.model.ProcessorDefinition;
 import org.apache.camel.model.RouteDefinition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -80,15 +81,18 @@ public class FlowRouteBuilder extends RouteBuilder {
                 .process(exchange -> logService.log(flowId, null, "INFO",
                         "Flow triggered — exchange: " + exchange.getExchangeId()));
 
+        ProcessorDefinition<?> current = route;
         for (int i = 1; i < chain.size(); i++) {
             final FlowNode node = chain.get(i);
             ConnectorHandler handler = registry.get(node.type());
-            handler.apply(route, node, flowId);
-            route.process(exchange -> logService.log(flowId, node.id(), "INFO",
+            // applyAndReturn lets structural nodes (Splitter, Filter) return their child
+            // definition so subsequent connectors wire inside the structural block.
+            current = handler.applyAndReturn(current, node, flowId);
+            current.process(exchange -> logService.log(flowId, node.id(), "INFO",
                     "Processed by " + node.type()));
         }
 
-        route.process(exchange -> logService.log(flowId, null, "INFO", "Flow execution completed"));
+        current.process(exchange -> logService.log(flowId, null, "INFO", "Flow execution completed"));
     }
 
     // -----------------------------------------------------------------------

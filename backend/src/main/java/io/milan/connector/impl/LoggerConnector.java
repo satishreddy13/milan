@@ -65,7 +65,7 @@ public class LoggerConnector implements ConnectorHandler {
                 "PROCESSOR",
                 "Logs the exchange body or a Simple expression to the application log and execution log",
                 List.of(
-                        ConfigField.text("message", "Message", true, "${body}"),
+                        ConfigField.expression("message", "Message", true, "${body}"),
                         ConfigField.select("level", "Level", true, "INFO",
                                 "TRACE", "DEBUG", "INFO", "WARN", "ERROR")
                 )

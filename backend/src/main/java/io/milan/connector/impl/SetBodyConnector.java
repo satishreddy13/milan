@@ -36,7 +36,7 @@ public class SetBodyConnector implements ConnectorHandler {
                 "TRANSFORMER",
                 "Sets the message body using a Camel Simple expression",
                 List.of(
-                        ConfigField.textarea("expression", "Expression", true, "${body}")
+                        ConfigField.expression("expression", "Expression", true, "${body}")
                 )
         );
     }

@@ -14,6 +14,9 @@ import { SchedulerNode }    from '../nodes/SchedulerNode'
 import { FileReaderNode }   from '../nodes/FileReaderNode'
 import { FileWriterNode }   from '../nodes/FileWriterNode'
 import { CsvParserNode }    from '../nodes/CsvParserNode'
+import { FilterNode }       from '../nodes/FilterNode'
+import { SplitterNode }     from '../nodes/SplitterNode'
+import { SetHeaderNode }    from '../nodes/SetHeaderNode'
 import type { ConnectorDescriptor } from '../../types/connector'
 
 // Must be defined OUTSIDE the component to avoid remounting on every render
@@ -26,6 +29,9 @@ const nodeTypes = {
   FILE_READER:   FileReaderNode,
   FILE_WRITER:   FileWriterNode,
   CSV_PARSER:    CsvParserNode,
+  FILTER:        FilterNode,
+  SPLITTER:      SplitterNode,
+  SET_HEADER:    SetHeaderNode,
 }
 
 interface Props {

@@ -39,6 +39,16 @@ public interface ConnectorHandler {
         throw new UnsupportedOperationException(getType() + " is a source connector");
     }
 
+    /**
+     * Like {@link #apply} but returns the {@link ProcessorDefinition} that subsequent nodes
+     * should chain onto. Most connectors return {@code route} unchanged; structural connectors
+     * (Splitter, Filter) return a child definition so downstream nodes wire inside the block.
+     */
+    default ProcessorDefinition<?> applyAndReturn(ProcessorDefinition<?> route, FlowNode node, UUID flowId) {
+        apply(route, node, flowId);
+        return route;
+    }
+
     /** Metadata used by the UI to render the palette entry and config form. */
     ConnectorDescriptor describe();
 }

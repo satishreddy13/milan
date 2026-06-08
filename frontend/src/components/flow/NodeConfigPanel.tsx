@@ -2,6 +2,7 @@ import type { Node } from '@xyflow/react'
 import type { ConnectorDescriptor } from '../../types/connector'
 import { useFlowStore } from '../../store/flowStore'
 import cronstrue from 'cronstrue'
+import { ExpressionInput } from './ExpressionInput'
 
 function parseCron(raw: string): { ok: boolean; text: string } {
   const expr = raw.trim()
@@ -72,6 +73,12 @@ export function NodeConfigPanel({ node, connectors }: Props) {
                   onChange={e => handleChange(field.key, e.target.value)}
                   className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm
                              font-mono focus:outline-none focus:ring-1 focus:ring-blue-400"
+                />
+              ) : field.type === 'expression' ? (
+                <ExpressionInput
+                  value={config[field.key] ?? String(field.defaultValue ?? '')}
+                  onChange={v => handleChange(field.key, v)}
+                  placeholder={String(field.defaultValue ?? '')}
                 />
               ) : field.type === 'cron' ? (() => {
                 const raw = config[field.key] ?? String(field.defaultValue ?? '')
