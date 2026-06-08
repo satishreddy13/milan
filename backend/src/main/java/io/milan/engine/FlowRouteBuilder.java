@@ -11,8 +11,10 @@ import org.apache.camel.Exchange;
 import org.apache.camel.builder.RouteBuilder;
 import org.apache.camel.dataformat.csv.CsvDataFormat;
 import org.apache.camel.model.ChoiceDefinition;
+import org.apache.camel.model.OnExceptionDefinition;
 import org.apache.camel.model.ProcessorDefinition;
 import org.apache.camel.model.RouteDefinition;
+import org.apache.camel.model.TryDefinition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -20,26 +22,28 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * Builds Camel routes from a stored FlowDefinition using recursive graph traversal.
+ * Builds Camel routes from a stored FlowDefinition via recursive graph traversal.
  *
- * <p>Routes:
+ * <h3>Route structure</h3>
  * <ol>
- *   <li><b>Feeder route</b> (optional) — SCHEDULER / FILE_READER source → {@code direct:flow-{id}}
- *   <li><b>Main route</b> — {@code direct:flow-{id}} → recursive DSL built from the node graph
+ *   <li><b>Feeder route</b> (optional) — SCHEDULER / FILE_READER → {@code direct:flow-{id}}
+ *   <li><b>Main route</b>  — {@code direct:flow-{id}} → recursive DSL from node graph
  * </ol>
  *
- * <p>Graph model:
+ * <h3>Node types handled directly (not via ConnectorHandler)</h3>
  * <ul>
- *   <li>Linear nodes have a single outgoing edge (no {@code sourceHandle}).
- *   <li>CHOICE nodes have two outgoing edges: {@code sourceHandle="when"} and {@code sourceHandle="otherwise"}.
- *       Each branch is built recursively, so branches are independent and can have different lengths.
+ *   <li>{@code ERROR_HANDLER} — standalone config node; shapes global {@code onException}
+ *   <li>{@code CHOICE}        — forks into when/otherwise branches
+ *   <li>{@code TRY_CATCH}     — wraps the remaining chain in doTry/doCatch
  * </ul>
  */
 public class FlowRouteBuilder extends RouteBuilder {
 
     private static final Logger log = LoggerFactory.getLogger(FlowRouteBuilder.class);
-
     static final String TRIGGER_SUFFIX = "-trigger";
+
+    /** Standalone node types that are not part of the main processing chain. */
+    private static final Set<String> STANDALONE_TYPES = Set.of("ERROR_HANDLER");
 
     private final String              routeId;
     private final FlowDefinition      definition;
@@ -60,6 +64,18 @@ public class FlowRouteBuilder extends RouteBuilder {
     }
 
     // -----------------------------------------------------------------------
+    // TryFrame — context for an open doTry/doCatch block
+    // -----------------------------------------------------------------------
+
+    private record TryFrame(
+            TryDefinition tryDef,
+            String        nodeId,
+            String        errorAction,    // "log" | "deadLetter" | "rethrow"
+            String        deadLetterDir,
+            String        logLevel        // "INFO" | "WARN" | "ERROR"
+    ) {}
+
+    // -----------------------------------------------------------------------
     // configure()
     // -----------------------------------------------------------------------
 
@@ -70,69 +86,122 @@ public class FlowRouteBuilder extends RouteBuilder {
                     "Flow " + flowId + " has no nodes — add at least a source node before starting");
         }
 
-        // onException must be declared before any from() in Camel RouteBuilder
-        onException(Exception.class)
-                .process(exchange -> {
-                    Exception ex = exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Exception.class);
-                    logService.log(flowId, null, "ERROR",
-                            "Flow execution failed: " + (ex != null ? ex.getMessage() : "unknown"));
-                })
-                .handled(true);
-
-        // Pre-build lookup maps used throughout traversal
         Map<String, FlowNode>       nodeById      = definition.nodes().stream()
                 .collect(Collectors.toMap(FlowNode::id, n -> n, (a, b) -> a, LinkedHashMap::new));
         Map<String, List<FlowEdge>> edgesBySource = definition.edges().stream()
                 .collect(Collectors.groupingBy(FlowEdge::source));
 
+        // onException must be declared before any from() — configure from ERROR_HANDLER node if present
+        Optional<FlowNode> errorHandlerNode = definition.nodes().stream()
+                .filter(n -> "ERROR_HANDLER".equals(n.type()))
+                .findFirst();
+        configureOnException(errorHandlerNode.orElse(null));
+
         FlowNode sourceNode = findSourceNode(nodeById);
         String   directUri  = "direct:flow-" + flowId;
-
-        configureSource(sourceNode, directUri, edgesBySource);
+        configureSource(sourceNode, directUri);
 
         RouteDefinition mainRoute = from(directUri)
                 .routeId(routeId)
                 .process(exchange -> logService.log(flowId, null, "INFO",
                         "Flow triggered — exchange: " + exchange.getExchangeId()));
 
-        // Walk edges from the source node into the rest of the graph
         List<FlowEdge> firstEdges = edgesBySource.getOrDefault(sourceNode.id(), List.of());
         if (!firstEdges.isEmpty()) {
             FlowNode first = nodeById.get(firstEdges.get(0).target());
-            if (first != null) {
-                buildRouteSegment(mainRoute, first, nodeById, edgesBySource, new HashSet<>());
-                return; // completion log emitted inside the recursive walk
+            if (first != null && !STANDALONE_TYPES.contains(first.type())) {
+                buildRouteSegment(mainRoute, first, nodeById, edgesBySource, new HashSet<>(), null);
+                return;
             }
         }
-
-        // Single-node flow (source only) — just mark it done
         mainRoute.process(exchange -> logService.log(flowId, null, "INFO", "Flow execution completed"));
+    }
+
+    // -----------------------------------------------------------------------
+    // onException — orchestration-level error handling
+    // -----------------------------------------------------------------------
+
+    private void configureOnException(FlowNode cfg) {
+        int    maxRetries    = intCfg(cfg, "maxRedeliveries",  0);
+        long   retryDelay    = longCfg(cfg, "redeliveryDelay", 1000L);
+        String deadLetterDir = strCfg(cfg, "deadLetterDir",   "/tmp/milan-deadletter");
+        boolean useDeadLetter = cfg != null && !deadLetterDir.isBlank()
+                && !"false".equals(strCfg(cfg, "useDeadLetter", "true"));
+
+        OnExceptionDefinition ex = onException(Exception.class)
+                .maximumRedeliveries(maxRetries)
+                .redeliveryDelay(retryDelay)
+                .process(exchange -> {
+                    Exception caught = exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Exception.class);
+                    String msg = "Flow execution failed: " + (caught != null ? caught.getMessage() : "unknown");
+                    logService.log(flowId, null, "ERROR", msg);
+                });
+
+        if (useDeadLetter) {
+            String dlDir = deadLetterDir;
+            ex.process(exchange -> {
+                Exception caught = exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Exception.class);
+                String err = caught != null ? caught.getMessage() : "unknown";
+                String orig = exchange.getIn().getBody(String.class);
+                exchange.getIn().setBody("Error: " + err + "\n---\n" + orig);
+            })
+            .to("file://" + dlDir + "?fileName=error-${date:now:yyyyMMdd-HHmmssSSS}.txt&autoCreate=true")
+            .handled(true);
+        } else {
+            ex.handled(true);
+        }
     }
 
     // -----------------------------------------------------------------------
     // Recursive route builder
     // -----------------------------------------------------------------------
 
-    /**
-     * Appends DSL for {@code node} onto {@code current}, then recurses to successor nodes.
-     * CHOICE nodes fork into two branches; all other nodes are linear.
-     */
     private void buildRouteSegment(ProcessorDefinition<?> current,
                                    FlowNode node,
                                    Map<String, FlowNode> nodeById,
                                    Map<String, List<FlowEdge>> edgesBySource,
-                                   Set<String> visited) {
+                                   Set<String> visited,
+                                   TryFrame openTry) {
+
         if (!visited.add(node.id())) {
-            log.warn("Cycle or converging path detected at node {} — skipping", node.id());
+            log.warn("Cycle or converging path at node {} — skipping", node.id());
             return;
         }
 
+        // Standalone config nodes are not part of the processing chain
+        if (STANDALONE_TYPES.contains(node.type())) return;
+
+        // ── CHOICE ─────────────────────────────────────────────────────────
         if ("CHOICE".equals(node.type())) {
             buildChoiceSegment(current, node, nodeById, edgesBySource, visited);
-            return; // branches terminate independently
+            return;
         }
 
-        // ── Linear node ───────────────────────────────────────────────────
+        // ── TRY_CATCH ───────────────────────────────────────────────────────
+        if ("TRY_CATCH".equals(node.type())) {
+            TryDefinition tryDef = current.doTry();
+            TryFrame frame = new TryFrame(
+                    tryDef,
+                    node.id(),
+                    strCfg(node, "errorAction",   "log"),
+                    strCfg(node, "deadLetterDir", "/tmp/milan-deadletter"),
+                    strCfg(node, "logLevel",      "ERROR")
+            );
+            List<FlowEdge> out = edgesBySource.getOrDefault(node.id(), List.of());
+            if (out.isEmpty()) {
+                closeTryFrame(frame);
+            } else {
+                FlowNode successor = nodeById.get(out.get(0).target());
+                if (successor != null) {
+                    buildRouteSegment(tryDef, successor, nodeById, edgesBySource, new HashSet<>(visited), frame);
+                } else {
+                    closeTryFrame(frame);
+                }
+            }
+            return;
+        }
+
+        // ── Linear node ─────────────────────────────────────────────────────
         ConnectorHandler handler = registry.get(node.type());
         ProcessorDefinition<?> next = handler.applyAndReturn(current, node, flowId);
         next.process(exchange -> logService.log(flowId, node.id(), "INFO",
@@ -140,61 +209,93 @@ public class FlowRouteBuilder extends RouteBuilder {
 
         List<FlowEdge> outgoing = edgesBySource.getOrDefault(node.id(), List.of());
         if (outgoing.isEmpty()) {
-            next.process(exchange -> logService.log(flowId, null, "INFO", "Flow execution completed"));
+            if (openTry != null) {
+                closeTryFrame(openTry);
+            } else {
+                next.process(exchange -> logService.log(flowId, null, "INFO", "Flow execution completed"));
+            }
         } else {
-            // Follow the single outgoing edge (or the first one if somehow there are several)
             FlowNode successor = nodeById.get(outgoing.get(0).target());
             if (successor != null) {
-                buildRouteSegment(next, successor, nodeById, edgesBySource, new HashSet<>(visited));
+                buildRouteSegment(next, successor, nodeById, edgesBySource, new HashSet<>(visited), openTry);
+            } else if (openTry != null) {
+                closeTryFrame(openTry);
             } else {
                 next.process(exchange -> logService.log(flowId, null, "INFO", "Flow execution completed"));
             }
         }
     }
 
-    /**
-     * Builds a Camel {@code choice().when(...).otherwise()} block.
-     * Edges leaving the CHOICE node must carry {@code sourceHandle="when"} or
-     * {@code sourceHandle="otherwise"}.
-     */
+    /** Close a doTry/doCatch block, adding appropriate error handling. */
+    private void closeTryFrame(TryFrame frame) {
+        String nodeId        = frame.nodeId();
+        String errorAction   = frame.errorAction();
+        String deadLetterDir = frame.deadLetterDir();
+        String lvl           = frame.logLevel();
+
+        var catchDef = frame.tryDef()
+                .doCatch(Exception.class)
+                .process(exchange -> {
+                    Exception ex = exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Exception.class);
+                    String msg = "Caught in try-catch: " + (ex != null ? ex.getMessage() : "unknown");
+                    logService.log(flowId, nodeId, lvl, msg);
+                });
+
+        // Note: in doTry/doCatch, exceptions are always caught (like Java try/catch).
+        // handled() does not exist on TryDefinition — rethrow requires an explicit throw.
+        switch (errorAction) {
+            case "deadLetter" -> {
+                String dlDir = deadLetterDir;
+                catchDef.process(exchange -> {
+                    Exception ex = exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Exception.class);
+                    String err  = ex != null ? ex.getMessage() : "unknown";
+                    String orig = exchange.getIn().getBody(String.class);
+                    exchange.getIn().setBody("Error: " + err + "\n---\n" + orig);
+                })
+                .to("file://" + dlDir + "?fileName=error-${date:now:yyyyMMdd-HHmmssSSS}.txt&autoCreate=true");
+            }
+            case "rethrow" -> {
+                // Re-raise so the global onException handler picks it up
+                catchDef.process(exchange -> {
+                    Exception ex = exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Exception.class);
+                    throw (ex instanceof RuntimeException re) ? re : new RuntimeException(ex);
+                });
+            }
+            // "log" — already logged above; flow continues after the catch block
+        }
+
+        frame.tryDef().end();
+    }
+
+    // -----------------------------------------------------------------------
+    // CHOICE segment
+    // -----------------------------------------------------------------------
+
     private void buildChoiceSegment(ProcessorDefinition<?> current,
                                     FlowNode choiceNode,
                                     Map<String, FlowNode> nodeById,
                                     Map<String, List<FlowEdge>> edgesBySource,
                                     Set<String> visited) {
-        String condition = cfgStr(choiceNode, "condition", "${body} != null");
+        String condition = strCfg(choiceNode, "condition", "${body} != null");
 
-        List<FlowEdge> outgoing = edgesBySource.getOrDefault(choiceNode.id(), List.of());
-        FlowEdge whenEdge      = outgoing.stream()
-                .filter(e -> "when".equals(e.sourceHandle())).findFirst().orElse(null);
-        FlowEdge otherwiseEdge = outgoing.stream()
-                .filter(e -> "otherwise".equals(e.sourceHandle())).findFirst().orElse(null);
-
-        logService.log(flowId, choiceNode.id(), "INFO",
-                "Evaluating choice: " + condition);
+        List<FlowEdge> outgoing    = edgesBySource.getOrDefault(choiceNode.id(), List.of());
+        FlowEdge whenEdge          = outgoing.stream().filter(e -> "when".equals(e.sourceHandle())).findFirst().orElse(null);
+        FlowEdge otherwiseEdge     = outgoing.stream().filter(e -> "otherwise".equals(e.sourceHandle())).findFirst().orElse(null);
 
         ChoiceDefinition choice = current.choice();
 
-        // ── when branch ───────────────────────────────────────────────────
         var when = choice.when().simple(condition);
-        when.process(exchange -> logService.log(flowId, choiceNode.id(), "INFO",
-                "Choice → when branch"));
+        when.process(exchange -> logService.log(flowId, choiceNode.id(), "INFO", "Choice → when branch"));
         if (whenEdge != null) {
             FlowNode whenNext = nodeById.get(whenEdge.target());
-            if (whenNext != null) {
-                buildRouteSegment(when, whenNext, nodeById, edgesBySource, new HashSet<>(visited));
-            }
+            if (whenNext != null) buildRouteSegment(when, whenNext, nodeById, edgesBySource, new HashSet<>(visited), null);
         }
 
-        // ── otherwise branch ──────────────────────────────────────────────
         var otherwise = choice.otherwise();
-        otherwise.process(exchange -> logService.log(flowId, choiceNode.id(), "INFO",
-                "Choice → otherwise branch"));
+        otherwise.process(exchange -> logService.log(flowId, choiceNode.id(), "INFO", "Choice → otherwise branch"));
         if (otherwiseEdge != null) {
             FlowNode otherwiseNext = nodeById.get(otherwiseEdge.target());
-            if (otherwiseNext != null) {
-                buildRouteSegment(otherwise, otherwiseNext, nodeById, edgesBySource, new HashSet<>(visited));
-            }
+            if (otherwiseNext != null) buildRouteSegment(otherwise, otherwiseNext, nodeById, edgesBySource, new HashSet<>(visited), null);
         }
 
         choice.end();
@@ -204,10 +305,8 @@ public class FlowRouteBuilder extends RouteBuilder {
     // Source wiring
     // -----------------------------------------------------------------------
 
-    private void configureSource(FlowNode sourceNode, String directUri,
-                                 Map<String, List<FlowEdge>> edgesBySource) {
-        Map<String, Object> cfg = sourceNode.data() != null
-                ? sourceNode.data().config() : Map.of();
+    private void configureSource(FlowNode sourceNode, String directUri) {
+        Map<String, Object> cfg = sourceNode.data() != null ? sourceNode.data().config() : Map.of();
 
         switch (sourceNode.type()) {
 
@@ -220,8 +319,7 @@ public class FlowRouteBuilder extends RouteBuilder {
             case "SCHEDULER" -> {
                 String cron = cfg.getOrDefault("cron", "0/30 * * * * ?").toString().trim();
                 if (cron.split("\\s+").length == 5) cron = "0 " + cron;
-                String encodedCron = cron.replace(" ", "+");
-                from("quartz://milan/" + flowId + "?cron=" + encodedCron + "&stateful=false")
+                from("quartz://milan/" + flowId + "?cron=" + cron.replace(" ", "+") + "&stateful=false")
                         .routeId(routeId + TRIGGER_SUFFIX)
                         .setBody().constant("")
                         .to(directUri);
@@ -237,39 +335,28 @@ public class FlowRouteBuilder extends RouteBuilder {
                 boolean hasHeader  = !"false".equals(cfg.getOrDefault("hasHeader", "true").toString());
 
                 String fileUri = "file://" + directory
-                        + "?include="    + pattern
-                        + "&delay=2000"
-                        + "&readLock=changed"
-                        + "&autoCreate=true"
-                        + "&charset="    + charset
+                        + "?include=" + pattern + "&delay=2000&readLock=changed&autoCreate=true&charset=" + charset
                         + switch (after) {
                             case "delete" -> "&delete=true";
                             case "none"   -> "&noop=true";
                             default       -> "&move=" + archiveDir;
                           };
 
-                var feeder = from(fileUri)
-                        .routeId(routeId + TRIGGER_SUFFIX)
-                        .convertBodyTo(String.class);
+                var feeder = from(fileUri).routeId(routeId + TRIGGER_SUFFIX).convertBodyTo(String.class);
 
                 if ("csv".equals(parser)) {
                     CsvDataFormat csvFmt = new CsvDataFormat();
                     csvFmt.setUseMaps(hasHeader);
                     feeder.unmarshal(csvFmt)
-                          .process(exchange -> {
-                              Object body = exchange.getIn().getBody();
-                              exchange.getIn().setBody(new ObjectMapper().writeValueAsString(body));
-                          });
+                          .process(exchange -> exchange.getIn()
+                                  .setBody(new ObjectMapper().writeValueAsString(exchange.getIn().getBody())));
                 }
-
                 feeder.to(directUri);
             }
 
             default -> {
                 ConnectorHandler handler = registry.get(sourceNode.type());
-                from(handler.buildFromUri(sourceNode))
-                        .routeId(routeId + TRIGGER_SUFFIX)
-                        .to(directUri);
+                from(handler.buildFromUri(sourceNode)).routeId(routeId + TRIGGER_SUFFIX).to(directUri);
             }
         }
     }
@@ -279,18 +366,25 @@ public class FlowRouteBuilder extends RouteBuilder {
     // -----------------------------------------------------------------------
 
     private FlowNode findSourceNode(Map<String, FlowNode> nodeById) {
-        Set<String> targetIds = definition.edges().stream()
-                .map(FlowEdge::target).collect(Collectors.toSet());
+        Set<String> targetIds = definition.edges().stream().map(FlowEdge::target).collect(Collectors.toSet());
         return definition.nodes().stream()
                 .filter(n -> !targetIds.contains(n.id()))
+                .filter(n -> !STANDALONE_TYPES.contains(n.type()))
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException(
                         "Flow " + flowId + " has no source node (possible cycle)"));
     }
 
-    private static String cfgStr(FlowNode node, String key, String def) {
-        if (node.data() == null || node.data().config() == null) return def;
+    // Config helpers — work with FlowNode or null (for defaults)
+    private static String strCfg(FlowNode node, String key, String def) {
+        if (node == null || node.data() == null || node.data().config() == null) return def;
         Object v = node.data().config().get(key);
         return v != null ? v.toString() : def;
+    }
+    private static int intCfg(FlowNode node, String key, int def) {
+        try { return Integer.parseInt(strCfg(node, key, String.valueOf(def))); } catch (NumberFormatException e) { return def; }
+    }
+    private static long longCfg(FlowNode node, String key, long def) {
+        try { return Long.parseLong(strCfg(node, key, String.valueOf(def))); } catch (NumberFormatException e) { return def; }
     }
 }

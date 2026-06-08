@@ -18,6 +18,10 @@ import { FilterNode }       from '../nodes/FilterNode'
 import { SplitterNode }     from '../nodes/SplitterNode'
 import { SetHeaderNode }    from '../nodes/SetHeaderNode'
 import { ChoiceNode }       from '../nodes/ChoiceNode'
+import { ErrorHandlerNode } from '../nodes/ErrorHandlerNode'
+import { TryCatchNode }     from '../nodes/TryCatchNode'
+import { WireTapNode }      from '../nodes/WireTapNode'
+import { AggregatorNode }   from '../nodes/AggregatorNode'
 import type { ConnectorDescriptor } from '../../types/connector'
 
 // Must be defined OUTSIDE the component to avoid remounting on every render
@@ -34,6 +38,10 @@ const nodeTypes = {
   SPLITTER:      SplitterNode,
   SET_HEADER:    SetHeaderNode,
   CHOICE:        ChoiceNode,
+  ERROR_HANDLER: ErrorHandlerNode,
+  TRY_CATCH:     TryCatchNode,
+  WIRE_TAP:      WireTapNode,
+  AGGREGATOR:    AggregatorNode,
 }
 
 interface Props {
