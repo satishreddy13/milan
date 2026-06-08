@@ -17,6 +17,7 @@ import { CsvParserNode }    from '../nodes/CsvParserNode'
 import { FilterNode }       from '../nodes/FilterNode'
 import { SplitterNode }     from '../nodes/SplitterNode'
 import { SetHeaderNode }    from '../nodes/SetHeaderNode'
+import { ChoiceNode }       from '../nodes/ChoiceNode'
 import type { ConnectorDescriptor } from '../../types/connector'
 
 // Must be defined OUTSIDE the component to avoid remounting on every render
@@ -32,6 +33,7 @@ const nodeTypes = {
   FILTER:        FilterNode,
   SPLITTER:      SplitterNode,
   SET_HEADER:    SetHeaderNode,
+  CHOICE:        ChoiceNode,
 }
 
 interface Props {

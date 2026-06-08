@@ -18,9 +18,10 @@ export interface MilanNodeData {
 }
 
 export interface MilanEdge {
-  id:     string
-  source: string
-  target: string
+  id:            string
+  source:        string
+  target:        string
+  sourceHandle?: string   // which output handle the edge came from (e.g. "when" / "otherwise")
 }
 
 export interface Flow {

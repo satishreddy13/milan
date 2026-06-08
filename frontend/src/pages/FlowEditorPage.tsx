@@ -44,7 +44,10 @@ export function FlowEditorPage() {
         data:     n.data as unknown as Record<string, unknown>,
       }))
       setNodes(rfNodes)
-      setEdges(def.edges.map(e => ({ id: e.id, source: e.source, target: e.target })))
+      setEdges(def.edges.map(e => ({
+        id: e.id, source: e.source, target: e.target,
+        ...(e.sourceHandle ? { sourceHandle: e.sourceHandle } : {}),
+      })))
     })
   }, [id])
 
@@ -60,7 +63,10 @@ export function FlowEditorPage() {
           position: n.position,
           data:     n.data as any,
         })),
-        edges: edges.map(e => ({ id: e.id, source: e.source, target: e.target })),
+        edges: edges.map(e => ({
+          id: e.id, source: e.source, target: e.target,
+          ...(e.sourceHandle ? { sourceHandle: e.sourceHandle } : {}),
+        })),
       }
       const updated = await flowsApi.update(id, { definition })
       setCurrentFlow(updated)
