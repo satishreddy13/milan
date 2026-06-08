@@ -92,8 +92,13 @@ public class FileWriterConnector implements ConnectorHandler {
                 + "?fileName="    + fileName
                 + "&autoCreate=true"
                 + "&charset="     + charset
-                + (append ? "&fileExist=Append" : "");
+                + (append ? "&fileExist=Append" : "&fileExist=Override");
 
+        // Clear the CamelFileName header that a FILE_READER upstream sets on the exchange.
+        // Without this the Camel file producer ignores the configured fileName and writes
+        // using the input file's name instead, causing "Cannot store file" failures when
+        // the header contains a path the producer cannot resolve.
+        route.removeHeader("CamelFileName");
         route.to(uri);
     }
 
