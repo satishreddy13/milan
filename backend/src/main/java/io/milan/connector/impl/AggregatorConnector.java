@@ -58,8 +58,14 @@ public class AggregatorConnector implements ConnectorHandler {
 
         if (completionSize   > 0) agg.completionSize(completionSize);
         if (completionTimeout > 0) agg.completionTimeout(completionTimeout);
-        // Safety net: always complete eventually
-        if (completionSize == 0 && completionTimeout == 0) agg.completionSize(Integer.MAX_VALUE);
+        if (completionSize == 0 && completionTimeout == 0) {
+            // "Auto" mode: collect everything from an upstream Splitter.
+            // completionFromBatchConsumer fires when the Splitter marks the last
+            // sub-exchange complete (CamelBatchComplete=true). The 5 s timeout is a
+            // fallback for parallel splitters where the last overall item may take the
+            // "otherwise" branch and never reach this aggregator with that flag set.
+            agg.completionFromBatchConsumer().completionTimeout(5_000);
+        }
 
         // After aggregation, convert List → JSON string for "collect" strategy
         if ("collect".equals(strategy)) {

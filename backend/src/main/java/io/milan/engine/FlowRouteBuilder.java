@@ -146,6 +146,8 @@ public class FlowRouteBuilder extends RouteBuilder {
                 .process(exchange -> {
                     Exception caught = exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Exception.class);
                     String msg = "Flow execution failed: " + (caught != null ? caught.getMessage() : "unknown");
+                    Throwable cause = caught != null ? caught.getCause() : null;
+                    if (cause != null) msg += " | Cause: " + cause.getMessage();
                     logService.log(flowId, null, "ERROR", msg);
                 });
 

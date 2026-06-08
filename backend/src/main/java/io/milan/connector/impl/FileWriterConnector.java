@@ -46,6 +46,15 @@ public class FileWriterConnector implements ConnectorHandler {
                 if (body instanceof String) {
                     return;  // already text — write as-is
                 }
+                if (body instanceof Map<?, ?> singleRow) {
+                    // Single Map row (e.g. from a Splitter) — write as one CSV data row (no header)
+                    StringBuilder sb = new StringBuilder();
+                    try (CSVPrinter printer = new CSVPrinter(sb, CSVFormat.DEFAULT)) {
+                        printer.printRecord(singleRow.values());
+                    }
+                    exchange.getIn().setBody(sb.toString());
+                    return;
+                }
                 if (!(body instanceof Iterable<?> iterable)) {
                     return;  // unknown type — let file component write toString()
                 }
